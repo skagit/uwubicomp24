@@ -28,9 +28,9 @@ Adafruit_LIS3DH lis = Adafruit_LIS3DH();
 // Step Detection Parameters
 #define accelBufferSize 100
 int stepCount = 0;
-float buffer[accelBufferSize]; // buffer for storing acceleration magnitudes
+float buffer[accelBufferSize];
 int bufferIndex = 0;
-float K = 12.5; // a “safety” threshold which makes the step counting more insensitive to minor bumps or other undesired movements of the phone. It is chosen heuristically.
+float K = 12.5; // min threshold to be considered a step
 
 void countPeaks() {
   // Algorithm in paper calculated mean and used a fraction of it as a threshold
@@ -47,9 +47,9 @@ void countPeaks() {
 };
 
 // Smoothing Parameters
-#define FILTER_SIZE 5 // Size of the moving average filter
-float filterBuffer[FILTER_SIZE]; // Buffer to store the last FILTER_SIZE readings
-int filterIndex = 0; // Index to keep track of the oldest value in the buffer
+#define FILTER_SIZE 5
+float filterBuffer[FILTER_SIZE];
+int filterIndex = 0; 
 
 float smoothAccel(float accel) {
   filterBuffer[filterIndex] = accel;
@@ -61,13 +61,14 @@ float smoothAccel(float accel) {
   return filteredAccel / FILTER_SIZE;
 }
 
-#define TEXT_TIME 4000
-#define HEART_TIME 6000
+#define TEXT_TIME 4000   // milliseconds stat screen of text will be displayed
+#define HEART_TIME 6000  // milli seconds heart screen will be displayed
 int lastStepCount = 0;
 unsigned long lastSwitchTime = 0;
 unsigned long waitTime = TEXT_TIME;
 bool isHeartDisplayed = false;
 
+// if only you knew how much blood sweat and Mountain Dew went into this
 const unsigned char heart_bitmap[512] PROGMEM = {
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
@@ -103,7 +104,7 @@ const unsigned char heart_bitmap[512] PROGMEM = {
   0x00, 0x00, 0x00, 0x3f, 0xfc, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0f, 0xf0, 0x00, 0x00, 0x00
 };
 
-unsigned char revealed_bitmap[512] PROGMEM;
+unsigned char revealed_bitmap[512] PROGMEM; // array to hold portion of heart that has been "revealed" for rendering
 
 void setup() {
   Serial.begin(9600);
@@ -125,6 +126,7 @@ void setup() {
     revealed_bitmap[i] = 0x00;
   }
 
+  // Probably not needed, but paranoid re-intits for reset button push
   stepCount = 0;
   bufferIndex = 0;
   filterIndex = 0;
@@ -154,51 +156,56 @@ void renderStats() {
     display.display();
 }
 
-int numBytes = 0;
-
+int renderedByteChunk = 0;
 void renderHeart() {
   display.clearDisplay();
   int currentBytes = stepCount % 32;
-  if (currentBytes < numBytes) {
+  if (currentBytes < renderedByteChunk) {  //If we find our steps have overflown the bitmap data, flush revelealed and start again
     for(int i=0; i<512; i++) {
       revealed_bitmap[i] = 0x00;
     }
   }
-  numBytes = currentBytes;
+  renderedByteChunk = currentBytes;
 
-  // copy 16 bytes for each numBytes from heart_bitmap into reavealed_bitmap
-  for(int i=0; i<numBytes; i++) {
+  // copy 16 bytes for each renderedByteChunk from heart_bitmap into reavealed_bitmap
+  // originally doing one byte per step meant a LOT of steps to reveal any heart foreground
+  for(int i=0; i<renderedByteChunk; i++) {
     for(int j=0; j<16; j++) {
       int k = i*16 + j;
       revealed_bitmap[k] = heart_bitmap[k];
     }
   }
 
-  // draw reavealed_bitmap
   display.drawBitmap(32, 0, revealed_bitmap, 64, 64, SSD1306_WHITE);
   display.display();
 }
 
-unsigned long algoStart = 0;
-
 void loop() {
+  // Get a timestamp
   unsigned long now = millis();
 
+  // Get sensor events, preprocessed into nice accelerations
+  // Adafruit for the win with this 
   sensors_event_t event;
   lis.getEvent(&event);
 
+  // Acceleration magnitude
   float accel = sqrt(pow(event.acceleration.x, 2) + pow(event.acceleration.y, 2) + pow(event.acceleration.z, 2));
+
+  // Running average update
   float smoothedAccel = smoothAccel(accel);
 
+  // Add to data sample for processing
   buffer[bufferIndex] = smoothedAccel;
   bufferIndex = (bufferIndex + 1) % accelBufferSize;
+
+  // When buffer is full, run step detection
   if (bufferIndex == 0) {
-    Serial.println(now - algoStart);
     lastStepCount = stepCount;
     countPeaks();
-    algoStart = now;
   }
 
+  // Check if enough time has passed between screen modes and switch
   if (now - lastSwitchTime >= waitTime) {
     if (isHeartDisplayed) {
       waitTime = TEXT_TIME;
@@ -212,7 +219,8 @@ void loop() {
     lastSwitchTime = now;
   }
 
-
+  // The visuals and data are driven by steps
+  // Only update if there is new step-driven data to warrant the cost
   if (stepCount != lastStepCount) {
     if (!isHeartDisplayed) {
       renderStats();
